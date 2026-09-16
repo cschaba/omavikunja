@@ -1,0 +1,142 @@
+# omavikunja releases — turns a pushed vX.Y.Z tag into a GitHub Release.
+#
+# Ported from omaipsum's release.yml. scripts/release.sh bumps manifest.json,
+# moves the changelog entry, tags and pushes; this workflow re-checks the tagged
+# commit on a clean runner, builds one tarball and publishes the Release with
+# that version's changelog section as its body.
+#
+# `gh release create` rather than a third-party action: gh is already on the
+# runner and needs nothing but GITHUB_TOKEN.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build a release for (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # The tag arrives through env:, not pasted into the script as ${{ }}, so
+      # it is validated before any shell could interpret it.
+      - name: Work out the version
+        id: version
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          tag="$TAG"
+          [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::'$tag' is not a vX.Y.Z tag"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      # The version lives only in manifest.json; a tag that disagrees was
+      # written by hand.
+      - name: Refuse a tag that disagrees with the manifest
+        run: |
+          manifest=$(python3 -c 'import json;print(json.load(open("manifest.json"))["version"])')
+          if [[ "$manifest" != "${{ steps.version.outputs.version }}" ]]; then
+            echo "::error::tag says ${{ steps.version.outputs.version }} but manifest.json says $manifest"
+            exit 1
+          fi
+
+      - name: Install Qt tooling
+        run: |
+          SUDO=""; [[ $(id -u) -eq 0 ]] || SUDO=sudo
+          $SUDO apt-get update -qq || true
+          $SUDO apt-get install -y -qq qt6-declarative-dev-tools
+          if ! command -v qmlformat >/dev/null 2>&1; then
+            for candidate in qmlformat6 /usr/lib/qt6/bin/qmlformat \
+                             /usr/lib/x86_64-linux-gnu/qt6/bin/qmlformat; do
+              if command -v "$candidate" >/dev/null 2>&1 || [[ -x $candidate ]]; then
+                $SUDO ln -sf "$(command -v "$candidate" || echo "$candidate")" /usr/local/bin/qmlformat
+                break
+              fi
+            done
+          fi
+          command -v qmlformat >/dev/null || { echo "::error::qmlformat missing"; exit 1; }
+
+      - name: Test before publishing
+        run: |
+          mapfile -d '' suite < <(find tests -maxdepth 1 -type f -perm -u+x -print0 | sort -z)
+          (( ${#suite[@]} )) || { echo "::error::no executable tests in tests/"; exit 1; }
+          for t in "${suite[@]}"; do
+            echo "--- $t"
+            "$t"
+          done
+
+      # The top-level directory is the plugin id, so extracting into
+      # ~/.config/omarchy/plugins is the whole install.
+      - name: Build the package
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          stage="dist/stage/cschaba.omavikunja"
+          mkdir -p "$stage"
+          shopt -s nullglob
+          cp -a manifest.json ./*.qml ./*.js README.md CHANGELOG.md LICENSE install.sh uninstall.sh "$stage/"
+          tar -czf "dist/omavikunja-$version.tar.gz" -C dist/stage cschaba.omavikunja
+          (cd dist && sha256sum "omavikunja-$version.tar.gz" > "omavikunja-$version.tar.gz.sha256")
+          echo "sha=$(cut -d' ' -f1 < "dist/omavikunja-$version.tar.gz.sha256")" >> "$GITHUB_OUTPUT"
+          tar -tzf "dist/omavikunja-$version.tar.gz"
+
+      - name: Pull the notes out of the changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ steps.package.outputs.sha }}
+        run: |
+          python3 - <<'PY'
+          import os, re, sys, textwrap
+          version = os.environ["VERSION"]
+          text = open("CHANGELOG.md").read()
+          match = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+          if match is None or not match.group(1).strip():
+              sys.exit(f"::error::CHANGELOG.md has no entries under '## [{version}]'")
+          footer = textwrap.dedent(f"""
+              ---
+
+              ### Install
+
+              ```bash
+              omarchy plugin add https://github.com/cschaba/omavikunja.git --enable
+              ```
+
+              `sha256: {os.environ["SHA"]}`
+              """)
+          with open("dist/release-notes.md", "w") as out:
+              out.write(match.group(1).strip() + "\n" + footer)
+          print(open("dist/release-notes.md").read())
+          PY
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --verify-tag \
+            --title "OmaVikunja $version" \
+            --notes-file dist/release-notes.md \
+            "dist/omavikunja-$version.tar.gz" \
+            "dist/omavikunja-$version.tar.gz.sha256"

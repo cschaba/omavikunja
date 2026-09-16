@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "id": "cschaba.omavikunja",
+  "name": "OmaVikunja",
+  "version": "0.0.1",
+  "author": "Carsten",
+  "license": "MIT",
+  "description": "Your Vikunja tasks from the Omarchy bar: list them, quick-add one, open it in the browser.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Vikunja",
+    "description": "See your open Vikunja tasks, add one without leaving the keyboard, and jump to it in the browser.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "serverUrl": "",
+      "refreshIntervalSec": 300
+    },
+    "schema": [
+      {
+        "key": "serverUrl",
+        "type": "string",
+        "label": "Server URL",
+        "defaultValue": "",
+        "description": "Base URL of your Vikunja instance, e.g. https://vikunja.example.com. The API token is not stored here — shell.json is not a place for secrets."
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300
+      }
+    ]
+  },
+  "homepage": "https://github.com/cschaba/omavikunja"
+}

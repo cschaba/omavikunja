@@ -1,0 +1,166 @@
+# omavikunja CI — ported from omaipsum's .github/workflows/ci.yml, which in
+# turn came from omapass. The same four jobs, minus omaipsum's corpora checks.
+#
+# The local gates come first and need no server: tests/smoke.sh parses every
+# shell script and QML file and validates manifest.json; scripts/release.sh
+# runs the whole of tests/ again and refuses to tag if anything fails. What CI
+# adds is shellcheck and a machine that is not the one the code was written on.
+#
+# No job here talks to a Vikunja server. Tests for the API client run against
+# recorded fixtures, never a live instance, and never with a real token.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Spelled out rather than inherited: the checkout is all the token is for.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  shell:
+    name: shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          SUDO=""; [[ $(id -u) -eq 0 ]] || SUDO=sudo
+          # Let update report and carry on: third-party sources on the runner
+          # image have broken it before, and install is the step that decides.
+          $SUDO apt-get update -qq || true
+          $SUDO apt-get install -y -qq shellcheck
+          shellcheck --version
+
+      # Globbed, never a hardcoded list — a list stops covering the repository
+      # the day a new script lands.
+      - name: Parse every shell script
+        run: |
+          mapfile -d '' scripts < <(find . -path ./.git -prune -o -type f -name '*.sh' -print0 | sort -z)
+          (( ${#scripts[@]} )) || { echo "::error::no shell scripts found — that cannot be right"; exit 1; }
+          for f in "${scripts[@]}"; do
+            echo "  bash -n $f"
+            bash -n "$f"
+          done
+          echo "${#scripts[@]} shell script(s) parse"
+
+      - name: Shellcheck
+        run: |
+          mapfile -d '' scripts < <(find . -path ./.git -prune -o -type f -name '*.sh' -print0 | sort -z)
+          shellcheck --severity=warning "${scripts[@]}"
+          echo "${#scripts[@]} shell script(s) clean at --severity=warning"
+
+  tests:
+    name: test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite skips a check rather than failing when its tool is missing,
+      # which is right on a laptop and wrong here. Install, then assert.
+      # Add nodejs to both lists when the API client gets its node tests.
+      - name: Install Qt tooling
+        run: |
+          SUDO=""; [[ $(id -u) -eq 0 ]] || SUDO=sudo
+          $SUDO apt-get update -qq || true
+          $SUDO apt-get install -y -qq qt6-declarative-dev-tools
+          # Ubuntu keeps the Qt 6 tools out of PATH; the tests call a bare
+          # `qmlformat`, so resolve it and link it somewhere that is.
+          if ! command -v qmlformat >/dev/null 2>&1; then
+            for candidate in qmlformat6 /usr/lib/qt6/bin/qmlformat \
+                             /usr/lib/x86_64-linux-gnu/qt6/bin/qmlformat; do
+              if command -v "$candidate" >/dev/null 2>&1 || [[ -x $candidate ]]; then
+                $SUDO ln -sf "$(command -v "$candidate" || echo "$candidate")" /usr/local/bin/qmlformat
+                break
+              fi
+            done
+          fi
+
+      - name: Refuse a suite that would skip its checks
+        run: |
+          status=0
+          for tool in python3 qmlformat; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              echo "  $tool -> $(command -v "$tool")"
+            else
+              echo "::error::$tool is missing — the suite would skip its checks and still pass"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Run every executable in tests/
+        run: |
+          [[ -d tests ]] || { echo "::error::there is no tests/ directory"; exit 1; }
+          mapfile -d '' suite < <(find tests -maxdepth 1 -type f -perm -u+x -print0 | sort -z)
+          (( ${#suite[@]} )) || { echo "::error::no executable tests in tests/"; exit 1; }
+          for t in "${suite[@]}"; do
+            echo "--- $t"
+            "$t"
+          done
+          echo "${#suite[@]} test script(s) pass"
+
+  manifest:
+    name: manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Mirrors validateManifest() in Omarchy's PluginRegistry.qml: a manifest
+      # it rejects is a plugin that silently is not there. Semver on top,
+      # because scripts/release.sh derives the next tag from this field.
+      - name: Validate manifest.json
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+
+          errors = []
+          try:
+              manifest = json.load(open("manifest.json"))
+          except Exception as exc:
+              sys.exit(f"manifest.json does not parse: {exc}")
+
+          for key in ("schemaVersion", "id", "name", "version", "kinds", "entryPoints"):
+              if manifest.get(key) is None:
+                  errors.append(f"missing required key {key!r}")
+          if manifest.get("schemaVersion") != 1:
+              errors.append(f"schemaVersion must be exactly 1, got {manifest.get('schemaVersion')!r}")
+          version = manifest.get("version")
+          if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", version):
+              errors.append(f"version {version!r} is not semver")
+          plugin_id = manifest.get("id")
+          if not isinstance(plugin_id, str) or not plugin_id or "/" in plugin_id or ".." in plugin_id:
+              errors.append(f"invalid plugin id {plugin_id!r}")
+          if not isinstance(manifest.get("kinds"), list) or not manifest["kinds"]:
+              errors.append("kinds must be a non-empty array")
+          entry_points = manifest.get("entryPoints")
+          if not isinstance(entry_points, dict) or not entry_points:
+              errors.append("entryPoints must be a non-empty object")
+          else:
+              for kind, path in sorted(entry_points.items()):
+                  if not isinstance(path, str) or path.startswith("/") or ".." in path:
+                      errors.append(f"unsafe entryPoint {kind!r} -> {path!r}")
+                  elif not os.path.isfile(path):
+                      errors.append(f"entryPoint {kind!r} -> {path!r} does not exist")
+                  else:
+                      print(f"  entryPoint {kind} -> {path}")
+          bar = manifest.get("barWidget")
+          if isinstance(bar, dict):
+              section = bar.get("defaultSection")
+              if section is not None and section not in ("left", "center", "right"):
+                  errors.append(f"barWidget.defaultSection {section!r} is not left/center/right")
+
+          for message in errors:
+              print(f"::error::manifest.json: {message}")
+          if errors:
+              sys.exit(1)
+          print(f"manifest.json ok: {manifest['id']} {manifest['version']}")
+          PY
