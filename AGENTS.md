@@ -108,17 +108,28 @@ polls a service.
 
 ## Talking to Vikunja
 
-The facts the design rests on, verified against try.vikunja.io on 2026-09-16,
-are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#vikunja-api). The two that
-bite:
+Three decisions bind every change; the reasoning and the verified API facts are
+in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+1. **Configuration is one file**, `~/.config/omavikunja/config.json`
+   (`0600`): server URL, API token, and every later option. Not `shell.json`,
+   not the manifest schema. `install.sh` asks for URL and token; the plugin
+   writes defaults if the file is missing.
+2. **API v2 only** (Vikunja ≥ 2.4.0). Lists come wrapped in
+   `{items, total, page, per_page, total_pages}`; partial updates use `PATCH`.
+   Never fall back to v1.
+3. **HTTP is `XMLHttpRequest` in `Vikunja.js`**, no dependencies: pure
+   request/response functions testable under node, one `send()` doing I/O.
+
+And two traps:
 
 - **Quick Add Magic is parsed by the web frontend, not the server.** A title
   sent as `buy milk *home !3 tomorrow` is stored literally.
-- **v1 `POST /api/v1/tasks/{id}` is a full replace.** Sending `{"done": true}`
-  wipes the description and priority. Use v2 `PATCH`, or GET-modify-POST.
+- **No due date is `0001-01-01T00:00:00Z`**, not `null`.
 
-Never put a real token in a test, a fixture, a log line or a commit. Tests run
-against recorded fixtures, not a live server.
+Never put a real token in a test, a fixture, a log line, a notification, a
+command line or a commit. Tests run against recorded fixtures, not a live
+server.
 
 ## Stay inside the plugin
 
@@ -131,4 +142,4 @@ put`) are the exception, because they are what a user would type.
 
 Unlike omaipsum, this plugin **uses the network and holds a secret**. Both are
 things the marketplace scan and a careful user will look for; keep them to the
-one configured server URL and the one token file, and say so in the README.
+one configured server URL and the one config file holding the token, and say so in the README.

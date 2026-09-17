@@ -15,9 +15,9 @@ SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PLUGIN_ID="cschaba.omavikunja"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 BINDINGS="$HOME/.config/hypr/bindings.lua"
-# Neither exists yet. The API token is planned to live under CONFIG_DIR rather
-# than in shell.json (see #1), and --purge already covers
-# both so the uninstaller does not have to learn about them later.
+# CONFIG_DIR holds config.json with the server URL and the API token
+# (docs/ARCHITECTURE.md, decision 1), so a plain uninstall keeps it and only
+# --purge removes it. STATE_DIR is not used yet.
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omavikunja"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omavikunja"
 TOGGLE_CMD="omarchy-shell cschaba.omavikunja.widget toggle"

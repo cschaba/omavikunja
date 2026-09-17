@@ -18,8 +18,10 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  // Settings from shell.json, with the manifest's defaults as fallback.
-  readonly property string serverUrl: String(setting("serverUrl", ""))
+  // Connection and options live in ~/.config/omavikunja/config.json, not in
+  // shell.json (docs/ARCHITECTURE.md, decision 1). Reading it arrives with the
+  // connection-setup issue.
+  readonly property string configPath: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/omavikunja/config.json"
 
   // The bar sizes a slot from its widget's implicit size — a root that does
   // not publish one gets a 0x0 slot and renders nothing at all, silently.
@@ -76,9 +78,7 @@ Panel {
           textFormat: Text.PlainText
           color: root.dim
           font.family: root.fontFamily
-          text: root.serverUrl === ""
-              ? "Not connected yet. Set a server URL in the widget settings."
-              : "Server: " + root.serverUrl + "\nTask list not implemented yet."
+          text: "Not connected yet. Server URL and API token will be read from " + root.configPath + "."
         }
       }
     }
