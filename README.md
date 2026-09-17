@@ -31,7 +31,7 @@ offline sync. For those, open Vikunja.
 | | | |
 |---|---|---|
 | Omarchy 4 | required | It is a shell plugin: `omarchy-shell` loads it and `omarchy` registers it. Omarchy 4 is still in alpha, so the plugin API may change under it. |
-| A Vikunja server | required | Self-hosted or Vikunja Cloud. The minimum version is still to be decided in [#2](https://github.com/cschaba/omavikunja/issues/2); 2.4 or newer is likely. |
+| A Vikunja server | required | Self-hosted **2.4.0 or newer**, or Vikunja Cloud. OmaVikunja uses Vikunja's API v2 only, which 2.4.0 introduced. |
 | A Vikunja API token | required | Created in Vikunja under *Settings → API Tokens*, with the scopes listed below. |
 
 ### Token scopes
@@ -69,11 +69,25 @@ o.bind("SUPER + ALT + V", "Vikunja tasks", "omarchy-shell cschaba.omavikunja.wid
 
 ## Configuration
 
-| Setting | Where | Default |
-|---|---|---|
-| Server URL | widget settings (`shell.json`) | — |
-| Refresh interval | widget settings (`shell.json`) | 300 s |
-| API token | **not** in `shell.json` — see [#1](https://github.com/cschaba/omavikunja/issues/1) | — |
+Everything lives in one file, `~/.config/omavikunja/config.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "serverUrl": "https://vikunja.example.com",
+  "apiToken": "tk_…",
+  "refreshIntervalSec": 300
+}
+```
+
+`install.sh` asks for the server URL and token and writes it for you. If you
+installed with `omarchy plugin add`, the plugin creates the file with empty
+values on first start; fill them in and reopen the pulldown.
+
+The file is created readable by you only (`0600`), because it holds your API
+token. It is not in `~/.config/omarchy/shell.json` on purpose: that file is
+often shared in dotfile repositories. If you keep `~/.config` in git, exclude
+`omavikunja/`.
 
 For Vikunja Cloud, the server URL is `https://app.vikunja.cloud`.
 
