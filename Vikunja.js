@@ -78,16 +78,20 @@ function clip(text) {
   return text.length > MESSAGE_LIMIT ? text.slice(0, MESSAGE_LIMIT - 1) + "…" : text
 }
 
-// The server's own words about an error. v1 answers {code, message}; v2's
-// error body is unverified and may be an RFC 9457 problem document
-// ({title, detail, errors}), so both are read. Never the raw body: a proxy's
-// HTML error page is not a message.
+// The server's own words about an error. v2 answers in two shapes: the auth
+// middleware sends {code, message}, the handlers an RFC 9457 problem document
+// ({title, status, detail, code, errors}). A 422's detail is only "validation
+// failed"; what failed is in errors[]. Never the raw body: a proxy's HTML
+// error page is not a message.
 function serverDetail(json) {
   if (!json || typeof json !== "object") return { code: 0, text: "" }
   var code = typeof json.code === "number" ? json.code : 0
   var text = json.message || json.detail || json.title || ""
-  if (!text && Array.isArray(json.errors) && json.errors.length > 0)
-    text = json.errors[0] && (json.errors[0].message || json.errors[0].detail) || ""
+  var first = Array.isArray(json.errors) && json.errors.length > 0 ? json.errors[0] : null
+  if (first && typeof first === "object") {
+    var what = [first.location, first.message || first.detail].filter(Boolean).join(" ")
+    if (what) text = text ? text + " (" + what + ")" : what
+  }
   return { code: code, text: clip(text) }
 }
 
