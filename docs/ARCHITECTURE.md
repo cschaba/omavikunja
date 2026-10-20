@@ -116,14 +116,63 @@ easy to try in a terminal, but it adds two runtime dependencies, starts a
 process for every request, and makes it easy to leak the token through argv.
 
 Timeouts: whether Qt's `XMLHttpRequest` honours the `timeout` property is
-*unverified*. If it does not, `send()` pairs each request with a QML `Timer`
-and calls `abort()`.
+*unverified*. `send()` sets it anyway, and every call returns `{abort}`, so if
+Qt ignores it the widget pairs the call with a QML `Timer` and calls `abort()`.
+A `.pragma library` script has no `setTimeout` to do that itself.
+
+**How the client came out (#4)**
+
+- *Exports.* Pure: `serverBase`, `apiUrl`, `checkConfig`, `infoRequest`,
+  `currentUserRequest`, `openTasksRequest`, `projectsRequest`,
+  `describeRequest`, `parseInfo`, `parseCurrentUser`, `parseEnvelope`,
+  `normaliseTask`, `normaliseDueDate`, `projectTitles`, `toError`,
+  `makeError`, `redact`, `parseVersion`. I/O: `send`. What the widget calls:
+  `info`, `currentUser`, `openTasks`, `projects`, each
+  `(config, callback(error, value))` → `{abort}`, where `config` is the
+  parsed `config.json`.
+- *Callbacks, not promises.* A callback is what `XMLHttpRequest` gives, and
+  it runs the same in QML's engine and under node with nothing to schedule.
+  Node-style `(error, value)` keeps one shape for all four calls.
+- *Error kinds.* `config`, `network`, `timeout`, `aborted`, `unsupported`,
+  `auth`, `forbidden`, `notFound`, `rateLimited`, `server`, `client`,
+  `parse`. The widget picks wording or an action by `kind`; `message` is
+  already fit to show. Vikunja's code 11 (invalid token) is `auth` whatever
+  the status.
+- *The token stays in `request.headers`.* No message is built from it, and
+  every message also passes through `redact()`, which blanks `tk_…` and
+  `Bearer …` in case a server echoes a header back. `describeRequest()` is the
+  way to log a request: method and URL, no headers.
+- *`/info` is sent without the token.* It needs none, and until it answers
+  nothing says the configured URL is a Vikunja server.
+- *"No API v2" has more than one face.* Vikunja 2.3.0 answers
+  `/api/v2/info` with a `404` and `{"message":"Not Found"}` (verified, see
+  below). A reverse proxy whose catch-all serves the web app could turn that
+  into a `200` of `index.html` instead. Both, an answer with no `version`, and
+  a version below 2.4.0 all come out as `unsupported`. A version that is not
+  `x.y.z` (Cloud's commit hash) is accepted.
+- *`serverUrl` is forgiving.* Trailing slashes go, and so does a trailing
+  `/api/v1` or `/api/v2`: Vikunja's settings page shows the API URL with
+  `/api/v1` on the end, which is what gets pasted.
+- *Paging.* `per_page=50` (Vikunja's default maximum); the walk follows
+  `total_pages` one page at a time, stops early on an empty page, and gives up
+  after 50 pages so a server that misreports `total_pages` cannot keep it
+  going.
+- *v2 errors come in two shapes*, so `toError` reads both and never shows a
+  raw body: `{code, message}` from the auth middleware, and an RFC 9457
+  problem document from the handlers (see Gotchas). A 422's `detail` is only
+  "validation failed"; the first entry of `errors[]` is appended to say what
+  failed.
+- *Under node,* `tests/lib/load-vikunja.js` loads the file into a `vm`
+  context; a test replaces `send` by assigning to it. `tests/fixtures/` holds
+  real v2 responses recorded for the tests (its README says how).
 
 ## Vikunja API v2 reference
 
 Verified on 2026-09-17 against try.vikunja.io (`v2.6.0-378-gce2c0822`) with the
-demo account, and Vikunja Cloud's public `/info`. Re-check anything marked
-*unverified* before relying on it.
+demo account, and Vikunja Cloud's public `/info`. Verified again on 2026-10-20
+against a local Vikunja **v2.7.0** (the release binary, SQLite) with an API
+token holding exactly the scopes below, and against a local **v2.3.0** for the
+"no v2" answer. Re-check anything marked *unverified* before relying on it.
 
 ### Authentication
 
@@ -131,8 +180,12 @@ demo account, and Vikunja Cloud's public `/info`. Re-check anything marked
   are sent as `Authorization: Bearer <token>`. Scopes are per group.
 - Scopes this plugin needs: `tasks: read_all, read_one, create, update`,
   `projects: read_all`, `other: user`. Without `other: user`, `/user` is a 401.
-  *(Scopes were checked on the v1 routes; that v2 uses the same scope names is
-  unverified.)*
+  v2 routes honour the same scope names: with these scopes `/api/v2/user`,
+  `/api/v2/tasks` and `/api/v2/projects` answer `200`, and
+  `/api/v2/projects/{id}` (needs `projects: read_one`) answers `401`.
+  `/api/v1/routes`, the list the token dialog is built from, names only v1
+  paths. `tasks` also offers `read`, which is `POST /tasks/{id}/read`, not
+  reading tasks; the plugin does not need it.
 - Vikunja Cloud has no password login, so a token is the only way in. Server
   URL `https://app.vikunja.cloud`.
 
@@ -162,9 +215,9 @@ added.
 | Purpose | Request | Notes |
 |---|---|---|
 | Connection check | `GET /api/v2/info` | No auth. `version` (a commit hash on Cloud), `frontend_url`, `max_items_per_page`. |
-| Current user | `GET /api/v2/user` | `settings.default_project_id` (may be 0), `settings.frontend_settings.quick_add_magic_mode`. |
+| Current user | `GET /api/v2/user` | `settings.default_project_id` (may be 0), `settings.frontend_settings.quick_add_magic_mode`. `frontend_settings` is `null` for a user who never opened the web app's settings. No email in the answer. |
 | My open tasks | `GET /api/v2/tasks?filter=done%3Dfalse&sort_by=due_date&order_by=asc&page=N&per_page=N` | Enveloped. Every project the user can access, not only assigned tasks. Filter and sort verified. |
-| Projects | `GET /api/v2/projects` | Enveloped. **Negative ids are saved filters**, not projects (`-2` came back as one); they also do not count towards `per_page`. |
+| Projects | `GET /api/v2/projects` | Enveloped. **Negative ids are saved filters**, not projects (saved filter 1 comes back as id `-2`); they count towards neither `per_page` nor `total`. |
 | Create a task | `POST /api/v2/projects/{id}/tasks` | `201` with the created task. Only `title` is required. |
 | Mark done | `PATCH /api/v2/tasks/{id}` `{"done": true}` | `200`; description and priority untouched. Accepts `Content-Type: application/json` as well as `application/merge-patch+json`. |
 | Delete a task | `DELETE /api/v2/tasks/{id}` | `204`, empty body. Not used by the plugin; noted for tests. |
@@ -177,9 +230,15 @@ added.
 - **Quick Add Magic is parsed by the web app only.** The server stores
   `probe *urgent !4 tomorrow` literally; supporting the syntax means
   implementing it here (#11).
-- **Errors** carry a Vikunja `code` in the JSON body (`{"code": 11, "message":
-  "missing, malformed, expired or otherwise invalid token provided"}`); check it
-  as well as the HTTP status.
+- **Errors** carry a Vikunja `code` in the JSON body; check it as well as the
+  HTTP status. v2 sends two shapes. A bad or missing token gets the auth
+  middleware's `{"code": 11, "message": "missing, malformed, expired or
+  otherwise invalid token provided"}` with `401`, and an unknown route
+  `{"message": "Not Found"}`. Everything from a handler is an RFC 9457 problem
+  document: `{"$schema", "title": "Not Found", "status": 404, "detail": "This
+  task does not exist", "code": 4002}`; a `422` adds `"errors": [{"message":
+  "expected length >= 1", "location": "body.title", "value": ""}]` and no
+  `code`; a `500` says only `"unexpected error occurred"`.
 - **Rate limiting** is off by default; when enabled, 100 requests per 60 s per
   user, with `X-RateLimit-*` headers. *Unverified* whether Cloud enables it.
 - CORS does not apply: this is not a browser.

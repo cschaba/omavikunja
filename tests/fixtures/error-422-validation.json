@@ -1,0 +1,1 @@
+{"$schema":"http://127.0.0.1:3456/api/v2/schemas/VikunjaErrorModel.json","title":"Unprocessable Entity","status":422,"detail":"validation failed","errors":[{"message":"expected length >= 1","location":"body.title","value":""}]}

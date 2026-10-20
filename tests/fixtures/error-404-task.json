@@ -1,0 +1,1 @@
+{"$schema":"http://127.0.0.1:3456/api/v2/schemas/VikunjaErrorModel.json","title":"Not Found","status":404,"detail":"This task does not exist","code":4002}

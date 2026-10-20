@@ -12,3 +12,10 @@ Notable changes per release. Dates are ISO. This project follows
   API token live in `~/.config/omavikunja/config.json`; Vikunja API v2 only
   (server 2.4.0 or newer); HTTP through a dependency-free JavaScript library.
   The widget settings in `shell.json` are gone.
+- `Vikunja.js`, the API v2 client: server info and version check, current
+  user, open tasks (all pages, soonest due first), project titles. Pure request
+  builders and response parsers apart from the one function that does HTTP;
+  one error shape for the UI; the token never reaches a message.
+  `tests/lib/load-vikunja.js` loads it under node. Tested against a local
+  Vikunja 2.7.0 (and 2.3.0 for the "too old" case); the real responses are in
+  `tests/fixtures/` for the test suite.
