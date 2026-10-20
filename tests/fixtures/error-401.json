@@ -1,0 +1,4 @@
+{
+  "code": 11,
+  "message": "missing, malformed, expired or otherwise invalid token provided"
+}
