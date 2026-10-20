@@ -57,6 +57,14 @@ because Omarchy owns that.
 - The token is never logged, shown, put in a notification, or passed on a
   command line (argv is visible to every process). The installer's optional
   connection check passes it to `curl` on stdin, not as an argument.
+- That check is `GET /api/v2/user`, not `/info`: `/info` needs no auth, so it
+  would prove the URL but not the token or the `other: user` scope. It does not
+  follow redirects, because `curl` would carry the header to wherever a
+  redirect points; a `3xx` is reported with its target instead.
+- The file is created by `mktemp` in the config directory (`0600` from the
+  start) and given its name with `ln`, which, unlike `mv`, refuses to replace a
+  file. No moment exists in which the token is readable by others, or in which
+  an existing config could be lost.
 - The file is JSON so QML reads it with `JSON.parse` and the installer writes
   it without `jq` or `python3`. The installer validates the values before
   writing: the token must match `^tk_[A-Za-z0-9]+$`, and the URL must be

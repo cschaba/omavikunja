@@ -80,7 +80,220 @@ else
   say "✓ linked $SOURCE_DIR → $PLUGIN_DIR"
 fi
 
-# --- 2. registration, through omarchy's own commands ------------------------
+# --- 2. the connection: server URL and API token ----------------------------
+#
+# docs/ARCHITECTURE.md, decision 1: one file, ours, holding the token. Asked for
+# once, written once, never overwritten — an existing config is the user's,
+# and a re-run is how they check it, not how they lose it.
+#
+# The token is a secret that can change every task its owner can see, so it is
+# read without echo, never printed, and never put on a command line: argv is
+# readable by every process on the machine. The connection check hands it to
+# curl on stdin.
+
+# Validation is what keeps the JSON below well-formed: neither value can hold
+# a quote, a backslash or a control character once it has passed, so printf
+# can write them between quotes with nothing to escape. LC_ALL=C pins the
+# ranges to ASCII — in some locales [A-Za-z] matches letters well outside it.
+valid_url() {
+  local LC_ALL=C
+  [[ $1 =~ ^https?://[^/?#]+ ]] || return 1
+  [[ $1 != *[\"\\[:space:][:cntrl:]]* ]]
+}
+
+valid_token() {
+  local LC_ALL=C
+  [[ $1 =~ ^tk_[A-Za-z0-9]+$ ]]
+}
+
+# The host part of a URL, lowercased, without userinfo or port. An IPv6
+# literal keeps its brackets, which is how it is compared below.
+url_host() {
+  local host="${1#*://}"
+  host="${host%%[/?#]*}"
+  host="${host##*@}"
+  if [[ $host == \[* ]]; then
+    host="${host%%]*}]"
+  else
+    host="${host%%:*}"
+  fi
+  printf '%s' "${host,,}"
+}
+
+# A warning, not a refusal: plain HTTP to the machine itself is a reasonable
+# setup, and to anywhere else it may be a LAN the user trusts. But they should
+# hear it before the token goes out, not after.
+warn_cleartext() {
+  local url=$1 host
+  [[ $url == http://* ]] || return 0
+  host="$(url_host "$url")"
+  case "$host" in
+    localhost | 127.0.0.1 | "[::1]") return 0 ;;
+  esac
+  echo
+  say "! $url is plain http:// to $host, which is not this machine."
+  say "  Every request carries your API token, and over http:// it crosses the"
+  say "  network in clear text. Use https:// if the server offers it."
+}
+
+# GET /api/v2/user is the cheapest request that proves both halves: the URL
+# reaches a Vikunja with API v2, and the token is accepted with the `other:
+# user` scope the plugin needs. Advisory only — a server that is down today is
+# not a reason to fail an install.
+#
+# The header goes in on stdin (`-H @-`): printf is a builtin, so the token is
+# in no process's argv. No -L: a redirect would carry our header to wherever
+# it points, so a 3xx is reported instead of followed.
+check_connection() {
+  local url=$1 token=$2 result code location
+  [[ -n $url && -n $token ]] || return 0
+  if ! command -v curl >/dev/null 2>&1; then
+    say "· curl not found — skipped the connection check"
+    return 0
+  fi
+  echo
+  say "Checking the connection to $url ..."
+  if ! result="$(printf 'Authorization: Bearer %s\n' "$token" |
+    curl -sS --proto '=http,https' --connect-timeout 5 --max-time 15 \
+      -o /dev/null -w '%{http_code} %{redirect_url}' -H @- \
+      "$url/api/v2/user" 2>&1)"; then
+    # curl's own message names the host and what went wrong, never a header.
+    # Its -w output can trail it ("000 "); only the message is worth showing.
+    say "! could not reach the server:"
+    printf '%s\n' "$result" | sed -e '/^000 *$/d' -e 's/000 *$//' -e 's/^/      /'
+    say "  Check the URL in $CONFIG_FILE, then re-run this script to try again."
+    return 0
+  fi
+  code="${result%% *}"
+  location="${result#* }"
+  case "$code" in
+    200)
+      say "✓ the server accepted the token"
+      ;;
+    401 | 403)
+      say "! the server answered $code: the token was refused. Check that it is"
+      say "  current and has the scopes listed in the README (other: user among"
+      say "  them), then correct it in $CONFIG_FILE."
+      ;;
+    404)
+      say "! the server answered 404 for /api/v2/user. Either the URL does not"
+      say "  point at Vikunja's root, or the server is older than 2.4.0 and has"
+      say "  no API v2. OmaVikunja needs 2.4.0 or newer."
+      ;;
+    3??)
+      say "! the server answered $code, a redirect${location:+ to $location}."
+      say "  Put the URL it redirects to in $CONFIG_FILE — the token is not sent"
+      say "  on to a redirect."
+      ;;
+    *)
+      say "! the server answered HTTP $code — not what a Vikunja API v2 sends."
+      ;;
+  esac
+}
+
+# Asked until the answer is valid or blank; blank (or end of input) leaves the
+# field empty, for the user to fill in later.
+ask_url() {
+  local answer
+  while :; do
+    read -r -p "  Vikunja server URL (e.g. https://vikunja.example.com, blank to skip): " answer || answer=""
+    # Trailing slashes off, so "$url/api/v2" never becomes "//api/v2".
+    while [[ $answer == */ ]]; do answer="${answer%/}"; done
+    if [[ -z $answer ]] || valid_url "$answer"; then
+      REPLY_URL=$answer
+      return 0
+    fi
+    say "! that is not an http:// or https:// URL without quotes, backslashes or spaces"
+  done
+}
+
+ask_token() {
+  local answer
+  while :; do
+    # -s: no echo. The newline the user typed is not echoed either, so add one.
+    read -r -s -p "  API token (tk_…, input hidden, blank to skip): " answer || answer=""
+    echo >&2
+    if [[ -z $answer ]] || valid_token "$answer"; then
+      REPLY_TOKEN=$answer
+      return 0
+    fi
+    # The rejected value is not repeated: it may be a real token mistyped.
+    say "! that is not a Vikunja API token — they look like tk_ followed by letters and digits"
+  done
+}
+
+# Written whole or not at all, and never over an existing file. mktemp creates
+# the temporary file 0600 before a byte is in it, so there is no moment when the
+# token is readable by anyone else; `ln` then gives it its real name and, unlike
+# mv, fails rather than replace a config.json that appeared in the meantime.
+write_config() {
+  local url=$1 token=$2 tmp
+  valid_url "$url" || [[ -z $url ]] || return 1
+  valid_token "$token" || [[ -z $token ]] || return 1
+  # Every step checked by hand: this runs as an `if` condition, and bash
+  # switches set -e off inside one, subshell included.
+  (
+    umask 077
+    mkdir -p "$CONFIG_DIR" && chmod 0700 "$CONFIG_DIR" || exit 1
+    tmp="$(mktemp "$CONFIG_DIR/.config.json.XXXXXX")" || exit 1
+    trap 'rm -f "$tmp"' EXIT
+    printf '{\n  "schemaVersion": 1,\n  "serverUrl": "%s",\n  "apiToken": "%s",\n  "refreshIntervalSec": 300\n}\n' \
+      "$url" "$token" >"$tmp" || exit 1
+    ln "$tmp" "$CONFIG_FILE"
+  )
+}
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omavikunja"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+
+echo
+if [[ -e $CONFIG_FILE || -L $CONFIG_FILE ]]; then
+  say "✓ kept the existing $CONFIG_FILE"
+  # Only reported, not changed: the file is the user's now, and a mode they set
+  # on purpose is theirs to keep.
+  mode="$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || echo "")"
+  if [[ -n $mode && $mode != 600 && $mode != 400 ]]; then
+    say "! it is mode $mode, and it holds your API token. Make it yours only:"
+    say "      chmod 600 $CONFIG_FILE"
+  fi
+  # A re-run is how a user who filled the file in by hand checks it. Without
+  # jq there is no safe way to read JSON from bash, so the check is skipped.
+  if command -v jq >/dev/null 2>&1; then
+    url="$(jq -r '.serverUrl // "" | strings' "$CONFIG_FILE" 2>/dev/null || true)"
+    token="$(jq -r '.apiToken // "" | strings' "$CONFIG_FILE" 2>/dev/null || true)"
+    url="${url%/}"
+    if [[ -n $url ]] && valid_url "$url"; then
+      warn_cleartext "$url"
+      valid_token "$token" && check_connection "$url" "$token"
+    fi
+    unset token
+  fi
+else
+  REPLY_URL=""
+  REPLY_TOKEN=""
+  if [[ -t 0 ]]; then
+    say "OmaVikunja needs your Vikunja server and an API token. Create the token"
+    say "in Vikunja under Settings → API Tokens; the README lists its scopes."
+    echo
+    ask_url
+    ask_token
+  fi
+  if ! write_config "$REPLY_URL" "$REPLY_TOKEN"; then
+    say "! could not write $CONFIG_FILE"
+    exit 1
+  fi
+  say "✓ wrote $CONFIG_FILE (readable by you only)"
+  if [[ -z $REPLY_URL || -z $REPLY_TOKEN ]]; then
+    say "  Fill in what is still empty — serverUrl and apiToken — in that file,"
+    say "  then re-run this script to check the connection:"
+    say "      \${EDITOR:-nano} $CONFIG_FILE"
+  fi
+  [[ -n $REPLY_URL ]] && warn_cleartext "$REPLY_URL"
+  check_connection "$REPLY_URL" "$REPLY_TOKEN"
+  unset REPLY_TOKEN
+fi
+
+# --- 3. registration, through omarchy's own commands ------------------------
 
 # The shell keeps its own list of what is installed, and a directory that
 # appeared after it started is not on it. Quiet and best-effort: with no shell
@@ -159,7 +372,7 @@ else
   say "      omarchy bar put $PLUGIN_ID"
 fi
 
-# --- 3. the keybinding, which is yours to add -------------------------------
+# --- 4. the keybinding, which is yours to add -------------------------------
 
 echo
 if [[ -f $BINDINGS ]] && grep -qF "$TOGGLE_CMD" "$BINDINGS"; then
@@ -185,7 +398,7 @@ else
   fi
 fi
 
-# --- 4. what happens next ---------------------------------------------------
+# --- 5. what happens next ---------------------------------------------------
 
 echo
 say "omavikunja installed. Restart the shell to load it:"

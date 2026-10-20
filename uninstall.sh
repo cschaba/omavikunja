@@ -34,8 +34,14 @@ while (( $# > 0 )); do
 ./uninstall.sh [--purge]
 
   Takes the widget off the bar, disables the plugin and removes the symlink
-  in ~/.config/omarchy/plugins. --purge also removes omavikunja's own config
-  and state under ~/.config/omavikunja and ~/.local/state/omavikunja.
+  in ~/.config/omarchy/plugins. Your configuration is kept, so a reinstall
+  picks up where you left off.
+
+  --purge   also deletes omavikunja's own directories:
+              ~/.config/omavikunja       config.json: server URL and API token
+              ~/.local/state/omavikunja  state
+            The token stays valid in Vikunja until you delete it there, under
+            Settings → API Tokens.
 
   Your checkout is never deleted, and no file outside omavikunja's own
   directories is edited — the keybinding is printed for you to remove.
@@ -107,11 +113,21 @@ for dir in "$CONFIG_DIR" "$STATE_DIR"; do
   if (( PURGE )); then
     if [[ -d $dir ]]; then
       rm -rf "$dir"
-      say "✓ removed $dir"
+      if [[ $dir == "$CONFIG_DIR" ]]; then
+        say "✓ removed $dir, and the API token in it"
+        say "  The token itself is still valid until you delete it in Vikunja,"
+        say "  under Settings → API Tokens."
+      else
+        say "✓ removed $dir"
+      fi
       removed_something=1
     fi
   elif [[ -e $dir ]]; then
-    say "· kept $dir — ./uninstall.sh --purge removes it"
+    if [[ $dir == "$CONFIG_DIR" ]]; then
+      say "· kept $dir, with your API token — ./uninstall.sh --purge removes it"
+    else
+      say "· kept $dir — ./uninstall.sh --purge removes it"
+    fi
   fi
 done
 
