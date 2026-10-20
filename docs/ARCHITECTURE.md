@@ -116,8 +116,52 @@ easy to try in a terminal, but it adds two runtime dependencies, starts a
 process for every request, and makes it easy to leak the token through argv.
 
 Timeouts: whether Qt's `XMLHttpRequest` honours the `timeout` property is
-*unverified*. If it does not, `send()` pairs each request with a QML `Timer`
-and calls `abort()`.
+*unverified*. `send()` sets it anyway, and every call returns `{abort}`, so if
+Qt ignores it the widget pairs the call with a QML `Timer` and calls `abort()`.
+A `.pragma library` script has no `setTimeout` to do that itself.
+
+**How the client came out (#4)**
+
+- *Exports.* Pure: `serverBase`, `apiUrl`, `checkConfig`, `infoRequest`,
+  `currentUserRequest`, `openTasksRequest`, `projectsRequest`,
+  `describeRequest`, `parseInfo`, `parseCurrentUser`, `parseEnvelope`,
+  `normaliseTask`, `normaliseDueDate`, `projectTitles`, `toError`,
+  `makeError`, `redact`, `parseVersion`. I/O: `send`. What the widget calls:
+  `info`, `currentUser`, `openTasks`, `projects`, each
+  `(config, callback(error, value))` → `{abort}`, where `config` is the
+  parsed `config.json`.
+- *Callbacks, not promises.* A callback is what `XMLHttpRequest` gives, and
+  it runs the same in QML's engine and under node with nothing to schedule.
+  Node-style `(error, value)` keeps one shape for all four calls.
+- *Error kinds.* `config`, `network`, `timeout`, `aborted`, `unsupported`,
+  `auth`, `forbidden`, `notFound`, `rateLimited`, `server`, `client`,
+  `parse`. The widget picks wording or an action by `kind`; `message` is
+  already fit to show. Vikunja's code 11 (invalid token) is `auth` whatever
+  the status.
+- *The token stays in `request.headers`.* No message is built from it, and
+  every message also passes through `redact()`, which blanks `tk_…` and
+  `Bearer …` in case a server echoes a header back. `describeRequest()` is the
+  way to log a request: method and URL, no headers.
+- *`/info` is sent without the token.* It needs none, and until it answers
+  nothing says the configured URL is a Vikunja server.
+- *"No API v2" has more than one face.* A pre-2.4.0 server answers
+  `/api/v2/info` with a 404, or — if its web app catches unknown paths — with
+  a `200` of `index.html`. Both, an answer with no `version`, and a version
+  below 2.4.0 all come out as `unsupported`. A version that is not `x.y.z`
+  (Cloud's commit hash) is accepted.
+- *`serverUrl` is forgiving.* Trailing slashes go, and so does a trailing
+  `/api/v1` or `/api/v2`: Vikunja's settings page shows the API URL with
+  `/api/v1` on the end, which is what gets pasted.
+- *Paging.* `per_page=50` (Vikunja's default maximum); the walk follows
+  `total_pages` one page at a time, stops early on an empty page, and gives up
+  after 50 pages so a server that misreports `total_pages` cannot keep it
+  going.
+- *Error bodies in v2 are unverified.* The `{code, message}` shape above was
+  seen on v1. v2's responses carry a `$schema` key, which suggests a framework
+  that answers errors as RFC 9457 problem documents (`{title, detail,
+  errors}`). `toError` reads either and never shows a raw body.
+- *Under node,* `tests/lib/load-vikunja.js` loads the file into a `vm`
+  context; a test replaces `send` by assigning to it.
 
 ## Vikunja API v2 reference
 
