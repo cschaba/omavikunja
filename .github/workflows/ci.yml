@@ -7,7 +7,9 @@
 # adds is shellcheck and a machine that is not the one the code was written on.
 #
 # No job here talks to a Vikunja server. Tests for the API client run against
-# recorded fixtures, never a live instance, and never with a real token.
+# recorded fixtures, never a live instance, and never with a real token. The
+# fixtures come from integration.yml, which checks the API against a throwaway
+# Vikunja in Docker.
 name: ci
 
 on:

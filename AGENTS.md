@@ -83,6 +83,7 @@ omarchy restart shell                           # the only reliable QML reload
 omarchy-shell cschaba.omavikunja.widget toggle  # open the pulldown
 journalctl --user -f | grep omarchy-shell       # where QML errors land
 tests/smoke.sh                                  # manifest, schema, QML, scripts
+tests/integration/run.sh /tmp/out               # API v2 facts, against a local throwaway Vikunja
 scripts/release.sh patch --dry-run              # what a release would do
 qmllint -I /usr/share/omarchy/shell *.qml       # type checking, locally
 ```
@@ -129,7 +130,12 @@ And two traps:
 
 Never put a real token in a test, a fixture, a log line, a notification, a
 command line or a commit. Tests run against recorded fixtures, not a live
-server.
+server. The one exception is `tests/integration/`:
+`.github/workflows/integration.yml` starts a throwaway Vikunja in Docker (2.4.0
+and `latest`), and `run.sh` registers its own user and token there, checks the
+API facts in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and records scrubbed
+responses as an artifact — the source of the fixtures. It refuses any server
+not on localhost.
 
 ## Stay inside the plugin
 

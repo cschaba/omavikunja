@@ -3,3 +3,4 @@
 
 # Claude Code local state (scheduler locks, session settings)
 .claude/
+__pycache__/

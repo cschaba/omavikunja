@@ -1,0 +1,87 @@
+# omavikunja integration — the Vikunja API v2 facts the plugin relies on, checked
+# against a real Vikunja rather than recorded answers.
+#
+# ci.yml stays server-free and fast. This workflow starts a throwaway Vikunja in
+# Docker for each version below, and tests/integration/run.sh registers its own
+# user and API token there, seeds projects and tasks, and checks what
+# docs/ARCHITECTURE.md says about the API. Nothing here uses a real server, a
+# real account or a secret from the repository; the token is created per run,
+# masked in the log, and dies with the container.
+#
+# The scrubbed responses are uploaded as an artifact: they are the fixtures the
+# API client's node tests run against, and a new Vikunja release is how they go
+# stale.
+name: integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Weekly, so a Vikunja release that changes the API shows up here before it
+  # shows up in somebody's bar. `latest` moves on its own; this repository may
+  # not.
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  vikunja:
+    name: vikunja ${{ matrix.vikunja }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest release OmaVikunja supports (the one that introduced API
+        # v2) and whatever is current. Docker Hub image tags.
+        vikunja: ["2.4.0", "latest"]
+    env:
+      VIKUNJA_IMAGE: vikunja/vikunja:${{ matrix.vikunja }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # SQLite in a directory on the runner, which the image's unprivileged user
+      # can write to. Bound to 127.0.0.1: the runner is not a public server.
+      # The JWT secret is passed through the environment rather than on
+      # docker's command line.
+      - name: Start Vikunja
+        run: |
+          mkdir -p "$RUNNER_TEMP/vikunja/db" "$RUNNER_TEMP/vikunja/files"
+          chmod 0777 "$RUNNER_TEMP/vikunja/db" "$RUNNER_TEMP/vikunja/files"
+          VIKUNJA_SERVICE_JWTSECRET="$(openssl rand -hex 32)"
+          export VIKUNJA_SERVICE_JWTSECRET
+          docker run -d --name vikunja -p 127.0.0.1:3456:3456 \
+            -e VIKUNJA_SERVICE_JWTSECRET \
+            -e VIKUNJA_SERVICE_PUBLICURL=http://localhost:3456/ \
+            -e VIKUNJA_SERVICE_ENABLEREGISTRATION=true \
+            -e VIKUNJA_DATABASE_TYPE=sqlite \
+            -e VIKUNJA_DATABASE_PATH=/db/vikunja.db \
+            -e VIKUNJA_FILES_BASEPATH=/app/vikunja/files \
+            -v "$RUNNER_TEMP/vikunja/db:/db" \
+            -v "$RUNNER_TEMP/vikunja/files:/app/vikunja/files" \
+            "$VIKUNJA_IMAGE"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$VIKUNJA_IMAGE"
+
+      - name: Check the API against it
+        run: tests/integration/run.sh "$RUNNER_TEMP/out"
+
+      - name: Vikunja's log
+        if: failure()
+        run: docker logs vikunja 2>&1 | tail -n 200
+
+      # fixtures/ only — the token file beside it is never uploaded.
+      - name: Upload the recorded responses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vikunja-v2-fixtures-${{ matrix.vikunja }}
+          path: ${{ runner.temp }}/out/fixtures/
+          if-no-files-found: warn
+          retention-days: 30
